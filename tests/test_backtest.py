@@ -148,3 +148,26 @@ def test_insolvent_path_is_rejected_instead_of_reporting_valid_performance():
     op, cl, target = market([[100], [100]], [[100], [400]], [[-0.5], [-0.5]])
     with pytest.raises(RuntimeError, match="insolvent"):
         run(op, cl, target)
+
+def test_idle_cash_earns_the_deposit_rate_while_positioned():
+    op, cl, target = market([[100]] * 3, weights=[[0.5]] * 3)
+    result = run(op, cl, target, costs=backtest.Costs(0, 0, 0, cash_annual=0.365, margin_annual=0.08))
+    assert result.ledger.financing.tolist() == pytest.approx([0, 5.0, 5.005])
+    assert result.equity.tolist() == pytest.approx([10000, 10005, 10010.005])
+
+
+def test_negative_cash_pays_the_margin_rate():
+    op, cl, target = market([[100]] * 3, weights=[[1.5]] * 3)
+    result = backtest.run_portfolio(op, cl, target, initial_cash=10000, max_gross=2,
+                                    max_asset=2, costs=backtest.Costs(0, 0, 0, margin_annual=0.365))
+    assert result.ledger.financing.iloc[1] == pytest.approx(-5.0)
+    assert result.equity.iloc[1] == pytest.approx(9995.0)
+    assert result.ledger.gross_exposure.iloc[-1] == pytest.approx(
+        15000 / result.equity.iloc[-1], rel=1e-9)
+    assert result.ledger.gross_exposure.iloc[-1] > 1.5  # margin interest shrinks NAV
+
+
+def test_leverage_above_one_requires_a_margin_rate():
+    op, cl, target = market([[100]] * 2, weights=[[1.5]] * 2)
+    with pytest.raises(ValueError, match="margin_annual"):
+        backtest.run_portfolio(op, cl, target, max_gross=2, max_asset=2, costs=FREE)

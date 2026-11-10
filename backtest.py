@@ -11,6 +11,9 @@ class Costs:
     fee: float = 0.001
     slippage: float = 0.0005
     borrow_annual: float = 0.10
+    # Interest rates on the cash balance itself, both annual fractions.
+    cash_annual: float = 0.0    # positive cash earns this, e.g. a money-market rate
+    margin_annual: float = 0.0  # negative cash (debit) pays this, e.g. a margin loan
 
 
 @dataclass
@@ -24,7 +27,7 @@ class PortfolioResult:
 
 FILL_COLUMNS = ["time", "symbol", "delta_qty", "price", "notional", "fee", "slippage", "reason"]
 LEDGER_COLUMNS = ["cash", "fees", "slippage", "borrow", "turnover", "long_pnl",
-                  "short_pnl", "gross_exposure", "net_exposure", "n_fills"]
+                  "short_pnl", "gross_exposure", "net_exposure", "n_fills", "financing"]
 
 
 def _validate_frames(opens, closes, targets, borrow_rates):
@@ -70,12 +73,16 @@ def run_portfolio(opens: pd.DataFrame, closes: pd.DataFrame, targets: pd.DataFra
                   borrow_rates: pd.DataFrame | None = None) -> PortfolioResult:
     _validate_frames(opens, closes, targets, borrow_rates)
     params = [initial_cash, rebalance_band, max_gross, max_asset,
-              costs.fee, costs.slippage, costs.borrow_annual]
+              costs.fee, costs.slippage, costs.borrow_annual,
+              costs.cash_annual, costs.margin_annual]
     if (not np.isfinite(params).all() or initial_cash <= 0 or not 0 <= rebalance_band <= 1
-            or not 0 < max_gross <= 1 or not 0 < max_asset <= 1
+            or max_gross <= 0 or max_asset <= 0
             or not 0 <= costs.fee < 0.1 or not 0 <= costs.slippage < 0.1
-            or costs.borrow_annual < 0):
+            or costs.borrow_annual < 0
+            or not 0 <= costs.cash_annual < 1 or not 0 <= costs.margin_annual < 1):
         raise ValueError("invalid capital, cost or exposure parameters")
+    if (max_gross > 1 + 1e-10 or max_asset > 1 + 1e-10) and costs.margin_annual <= 0:
+        raise ValueError("leverage above 1x requires a positive margin_annual rate")
     if ((targets.abs().sum(axis=1) > max_gross + 1e-10).any()
             or (targets.abs() > max_asset + 1e-10).any().any()):
         raise ValueError("target exceeds exposure limit")
@@ -136,6 +143,9 @@ def run_portfolio(opens: pd.DataFrame, closes: pd.DataFrame, targets: pd.DataFra
         intraday = qty * (c[t] - o[t])
         borrow = np.maximum(-qty, 0) * c[t] * rates[t] / 365
         cash -= borrow.sum()
+        # Idle cash earns the deposit rate; a debit balance pays the margin rate.
+        financing = cash * (costs.cash_annual if cash >= 0 else costs.margin_annual) / 365
+        cash += financing
         equity[t] = cash + np.dot(qty, c[t])
         if equity[t] <= 0:
             raise RuntimeError(f"insolvent at {opens.index[t]} close")
@@ -144,7 +154,8 @@ def run_portfolio(opens: pd.DataFrame, closes: pd.DataFrame, targets: pd.DataFra
         short_pnl = gap[old_qty < 0].sum() + intraday[qty < 0].sum() - short_cost - borrow.sum()
         realized_weights[t] = qty * c[t] / equity[t]
         ledger[t] = [cash, fee.sum(), slip.sum(), borrow.sum(), turnover, long_pnl,
-                     short_pnl, np.abs(realized_weights[t]).sum(), realized_weights[t].sum(), count]
+                     short_pnl, np.abs(realized_weights[t]).sum(), realized_weights[t].sum(), count,
+                     financing]
 
     return PortfolioResult(
         equity=pd.Series(equity, index=opens.index, name="equity"),

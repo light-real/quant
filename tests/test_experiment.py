@@ -43,7 +43,7 @@ def test_experiment_reports_historical_validation_and_costs(tmp_path):
     assert metadata["live_ready"] is False
     assert metadata["short_cost_model"] == "assumed_spot_borrow"
     assert metadata["parameters"]["horizons"] == [20, 60, 120]
-    assert metadata["parameters"]["target_vol"] == 0.15
+    assert metadata["parameters"]["target_vol"] == 0.60
     assert metadata["source_hashes"]
     assert len(metadata["input_hashes"]["BTCUSDT"]) == 64
     assert result.output_dir == tmp_path
@@ -51,7 +51,8 @@ def test_experiment_reports_historical_validation_and_costs(tmp_path):
         equity = pd.read_csv(tmp_path / f"equity_{strategy}_validation.csv", index_col=0).iloc[:, 0]
         ledger = pd.read_csv(tmp_path / f"ledger_{strategy}_validation.csv", index_col=0)
         assert equity.iloc[0] == 20000
-        assert equity.diff().fillna(0).to_numpy() == pytest.approx((ledger.long_pnl + ledger.short_pnl).to_numpy())
+        assert equity.diff().fillna(0).to_numpy() == pytest.approx(
+            (ledger.long_pnl + ledger.short_pnl + ledger.financing).to_numpy())
     long_rows = m[(m.strategy == "trend_long") & (m.scenario == "base")]
     assert long_rows.borrow.tolist() == [0.0] * len(long_rows)
     assert long_rows.short_pnl.to_numpy() == pytest.approx(np.zeros(len(long_rows)))

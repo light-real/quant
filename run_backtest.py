@@ -17,9 +17,19 @@ from report import equity_chart, exposure_chart
 from signals import portfolio_weights, trend_forecast
 
 SYMBOLS = ("BTCUSDT", "ETHUSDT")
-PARAMETERS = {"horizons": [20, 60, 120], "vol_window": 60, "target_vol": 0.15,
-              "max_gross": 1.0, "max_asset": 0.6, "rebalance_band": 0.02,
-              "initial_cash": 20000.0}
+PARAMETERS = {"horizons": [20, 60, 120], "vol_window": 60, "target_vol": 0.60,
+              "max_gross": 1.8, "max_asset": 0.9, "rebalance_band": 0.15,
+              "initial_cash": 20000.0, "cash_annual": 0.025, "margin_annual": 0.08}
+
+
+def _costs(**overrides) -> Costs:
+    """Base costs plus the configured cash and margin rates, with scenario overrides."""
+    base = {"fee": Costs().fee, "slippage": Costs().slippage,
+            "borrow_annual": Costs().borrow_annual,
+            "cash_annual": PARAMETERS["cash_annual"],
+            "margin_annual": PARAMETERS["margin_annual"]}
+    base.update(overrides)
+    return Costs(**base)
 PRIMARY = ("passive_risk_budget", "trend_long", "trend_dual", "short_only")
 
 
@@ -85,7 +95,7 @@ def _summary(strategy, scenario, segment, result, end=None):
         ledger = ledger.loc[:end]
     return {"strategy": strategy, "scenario": scenario, "segment": segment, **stats,
             **{key: float(ledger[key].sum()) for key in
-               ("fees", "slippage", "borrow", "long_pnl", "short_pnl")},
+               ("fees", "slippage", "borrow", "financing", "long_pnl", "short_pnl")},
             "mean_gross_exposure": float(ledger.gross_exposure.mean()),
             "peak_gross_exposure": float(ledger.gross_exposure.max()),
             "turnover_annual": float(ledger.turnover.sum() * 365 / len(ledger)),
@@ -165,11 +175,12 @@ def run_experiment(data=None, csv_dir="csv", out_dir=None,
     except FileExistsError as exc:
         raise FileExistsError(f"output directory already claimed by another run: {out}") from exc
 
-    def simulate(name, scope, costs=Costs(), assumed_borrow=False):
+    def simulate(name, scope, costs=None, assumed_borrow=False):
         dates = opens.index if scope == "full" else opens.loc[boundary:].index
         rates = None if observed_rates is None or assumed_borrow else observed_rates.loc[dates]
         return run_portfolio(opens.loc[dates], closes.loc[dates], targets[name].loc[dates],
-                             costs=costs, borrow_rates=rates, **execution)
+                             costs=_costs() if costs is None else costs,
+                             borrow_rates=rates, **execution)
 
     runs: dict[tuple[str, str, str], PortfolioResult] = {}
     rows = []
@@ -195,12 +206,12 @@ def run_experiment(data=None, csv_dir="csv", out_dir=None,
         runs[(name, "validation", "base")] = result
         rows.append(_summary(name, "base", "historical_validation", result))
     for name in PRIMARY:
-        result = simulate(name, "validation", Costs(fee=0.002, slippage=0.001))
+        result = simulate(name, "validation", _costs(fee=0.002, slippage=0.001))
         runs[(name, "validation", "trading_costs_2x")] = result
         rows.append(_summary(name, "trading_costs_2x", "historical_validation", result))
     for name in ("trend_dual", "short_only"):
         for scenario, rate in (("borrow_5pct", 0.05), ("borrow_20pct", 0.20)):
-            result = simulate(name, "validation", Costs(borrow_annual=rate), assumed_borrow=True)
+            result = simulate(name, "validation", _costs(borrow_annual=rate), assumed_borrow=True)
             runs[(name, "validation", scenario)] = result
             rows.append(_summary(name, scenario, "historical_validation", result))
 
@@ -211,7 +222,7 @@ def run_experiment(data=None, csv_dir="csv", out_dir=None,
     snapshot = json.loads(manifest_path.read_text(encoding="utf-8")) if loaded and manifest_path.exists() else None
     metadata = {
         "generated_utc": stamp.isoformat(), "parameters": PARAMETERS.copy(),
-        "base_costs": asdict(Costs()), "development_end": boundary.isoformat(),
+        "base_costs": asdict(_costs()), "development_end": boundary.isoformat(),
         "input_start": data[SYMBOLS[0]].index[0].isoformat(),
         "last_complete_bar": closes.index[-1].isoformat(), "initial_nav_date": start.isoformat(),
         "as_of": _utc_timestamp(as_of).isoformat() if as_of is not None else None,
@@ -232,7 +243,7 @@ def run_experiment(data=None, csv_dir="csv", out_dir=None,
                         "Only two correlated surviving assets; no universe selection correction.",
                         "Synthetic spot shorts; borrowing availability and forced recall are not modeled.",
                         "No perpetual funding, margin liquidation, intraday stops, or market impact model.",
-                        "Idle cash earns zero; terminal positions are marked, not liquidated.",
+                        "Idle cash earns the configured deposit rate; debit balances pay the margin rate daily, but no maintenance margin or forced liquidation is modeled.",
                         "Execution caps may be exceeded by subsequent price and borrowing-cost drift.",
                         "Development-calibrated passive exposure need not match future realized risk.",
                         "Short-only is an ablation, not the short contribution of the dual portfolio."]}
