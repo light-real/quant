@@ -1,0 +1,13 @@
+# 行情快照与回测产物：体积大，用 fetch_klines.py / run_backtest.py 重建
+csv/
+results/
+results_v2/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 运行期产物
+*.log
+.run.lock
