@@ -2,6 +2,7 @@
 csv/
 results/
 results_v2/
+results_v3/
 
 # Python
 __pycache__/
